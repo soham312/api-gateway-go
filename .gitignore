@@ -1,0 +1,12 @@
+# Compiled binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -22,21 +22,14 @@ func main() {
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
-		// We must explicitly set the Host header for HTTPS targets
-		req.Host = target.Host 
+		req.Host = target.Host
 	}
 
-	// 4. Create a handler to capture traffic and pass it to the proxy
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Gateway intercepted request for: %s", r.URL.Path)
-		proxy.ServeHTTP(w, r)
-	})
-
-	// 5. Start the API Gateway on port 8080
+	// 4. Start the server, but wrap the proxy in our new rate limiter!
 	log.Println("🚀 API Gateway is running on http://localhost:8080")
-	log.Printf("➡️  Forwarding all traffic to %s", targetURL)
-	
-	err = http.ListenAndServe(":8080", nil)
+
+	// This is the magic line that connects Phase 2 and Phase 3:
+	err = http.ListenAndServe(":8080", rateLimitMiddleware(proxy.ServeHTTP))
 	if err != nil {
 		log.Fatal("Server error:", err)
 	}

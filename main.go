@@ -5,25 +5,53 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync/atomic"
 )
 
-// 1. Create a list of different backend servers (we are using 3 public testing APIs)
-var backends = []string{
-	"https://jsonplaceholder.typicode.com",
-	"https://dummyjson.com",
-	"https://api.restful-api.dev",
+// 1. Dynamic routing table mapping URL prefixes to target clusters
+var routes = map[string][]string{
+	"/users": {
+		"https://jsonplaceholder.typicode.com",
+		"https://dummyjson.com",
+	},
+	"/products": {
+		"https://api.restful-api.dev",
+	},
 }
 
-// A counter to keep track of whose turn it is
-var requestCounter uint64 = 0
+// 2. A map of counters so each route has its own independent load balancer
+var counters = map[string]*uint64{
+	"/users":    new(uint64),
+	"/products": new(uint64),
+}
 
 func main() {
-	// 2. We write a custom Director function to pick a server dynamically
+	// 3. Upgraded Director for Longest-Prefix Routing
 	director := func(req *http.Request) {
-		// Safely add 1 to the counter and divide by 3 to get the next index (0, 1, or 2)
-		nextIndex := atomic.AddUint64(&requestCounter, 1) % uint64(len(backends))
-		targetURL := backends[nextIndex]
+		var targetCluster []string
+		var activeCounter *uint64
+		var matchedPrefix string
+
+		// Scan the incoming URL to see which route it matches
+		for prefix, backends := range routes {
+			if strings.HasPrefix(req.URL.Path, prefix) {
+				targetCluster = backends
+				activeCounter = counters[prefix]
+				matchedPrefix = prefix
+				break
+			}
+		}
+
+		// If the user asks for a path we don't have, drop the request
+		if targetCluster == nil {
+			log.Printf("⚠️ No route found for path: %s", req.URL.Path)
+			return
+		}
+
+		// Apply Round-Robin Load Balancing STRICTLY to the matched cluster
+		nextIndex := atomic.AddUint64(activeCounter, 1) % uint64(len(targetCluster))
+		targetURL := targetCluster[nextIndex]
 
 		target, err := url.Parse(targetURL)
 		if err != nil {
@@ -31,21 +59,19 @@ func main() {
 			return
 		}
 
-		// Route the traffic to the chosen server
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.Host = target.Host
 
-		// Print a message in the terminal so we can see the load balancer working!
-		log.Printf("⚖️ Load Balancer routed request to: %s", target.Host)
+		log.Printf("🔀 Routed [%s] request to: %s", matchedPrefix, target.Host)
 	}
 
-	// 3. Create the proxy using our custom load-balancing director
+	// 4. Create the proxy using our custom load-balancing director
 	proxy := &httputil.ReverseProxy{Director: director}
 
-	log.Println("🚀 API Gateway running on http://localhost:8080 (Load Balancing Active)")
+	log.Println("🚀 API Gateway running on http://localhost:8080 (Dynamic Routing Active)")
 
-	// 4. Start the server (our Phase 3 rate limiter is still protecting the front door!)
+	// 5. Start the server with Logging -> Rate Limiter -> Load Balancer -> Backend
 	err := http.ListenAndServe(":8080", loggingMiddleware(rateLimitMiddleware(proxy.ServeHTTP)))
 	if err != nil {
 		log.Fatal("Server error:", err)

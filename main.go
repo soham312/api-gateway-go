@@ -46,7 +46,7 @@ func main() {
 	log.Println("🚀 API Gateway running on http://localhost:8080 (Load Balancing Active)")
 
 	// 4. Start the server (our Phase 3 rate limiter is still protecting the front door!)
-	err := http.ListenAndServe(":8080", rateLimitMiddleware(proxy.ServeHTTP))
+	err := http.ListenAndServe(":8080", loggingMiddleware(rateLimitMiddleware(proxy.ServeHTTP)))
 	if err != nil {
 		log.Fatal("Server error:", err)
 	}

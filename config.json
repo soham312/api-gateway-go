@@ -1,0 +1,10 @@
+{
+  "/users": [
+    "https://jsonplaceholder.typicode.com",
+    "https://dummyjson.com",
+    "https://this-is-a-new-server.com"
+  ],
+  "/products": [
+    "https://api.restful-api.dev"
+  ]
+}

@@ -9,31 +9,39 @@ import (
 	"sync/atomic"
 )
 
-// 1. Dynamic routing table mapping URL prefixes to target clusters
-var routes = map[string][]string{
+// 1. Upgraded routing table using our new Backend objects for Fault Tolerance
+var routes = map[string][]*Backend{
 	"/users": {
-		"https://jsonplaceholder.typicode.com",
-		"https://dummyjson.com",
+		{URL: "https://jsonplaceholder.typicode.com", Alive: true},
+		{URL: "https://dummyjson.com", Alive: true},
 	},
 	"/products": {
-		"https://api.restful-api.dev",
+		{URL: "https://api.restful-api.dev", Alive: true},
 	},
 }
 
-// 2. A map of counters so each route has its own independent load balancer
 var counters = map[string]*uint64{
 	"/users":    new(uint64),
 	"/products": new(uint64),
 }
 
 func main() {
-	// 3. Upgraded Director for Longest-Prefix Routing
+	// 2. Start the Active Health Polling in the background
+	// Gather all backends into one list to pass to the health checker
+	var allBackends []*Backend
+	for _, cluster := range routes {
+		allBackends = append(allBackends, cluster...)
+	}
+
+	// The 'go' keyword starts this loop as an independent background task!
+	go activeHealthPolling(allBackends)
+
+	// 3. Upgraded Director with State-Machine Circuit Breaker logic
 	director := func(req *http.Request) {
-		var targetCluster []string
+		var targetCluster []*Backend
 		var activeCounter *uint64
 		var matchedPrefix string
 
-		// Scan the incoming URL to see which route it matches
 		for prefix, backends := range routes {
 			if strings.HasPrefix(req.URL.Path, prefix) {
 				targetCluster = backends
@@ -43,15 +51,31 @@ func main() {
 			}
 		}
 
-		// If the user asks for a path we don't have, drop the request
 		if targetCluster == nil {
 			log.Printf("⚠️ No route found for path: %s", req.URL.Path)
 			return
 		}
 
-		// Apply Round-Robin Load Balancing STRICTLY to the matched cluster
-		nextIndex := atomic.AddUint64(activeCounter, 1) % uint64(len(targetCluster))
-		targetURL := targetCluster[nextIndex]
+		// Circuit Breaker: Find the next HEALTHY server
+		var targetURL string
+		clusterSize := uint64(len(targetCluster))
+
+		for i := uint64(0); i < clusterSize; i++ {
+			nextIndex := atomic.AddUint64(activeCounter, 1) % clusterSize
+			backend := targetCluster[nextIndex]
+
+			// Only route traffic if the circuit is closed (server is Alive)
+			if backend.IsAlive() {
+				targetURL = backend.URL
+				break
+			}
+		}
+
+		// If the entire cluster crashed
+		if targetURL == "" {
+			log.Printf("🚨 CRITICAL: All servers for %s are DOWN!", matchedPrefix)
+			return
+		}
 
 		target, err := url.Parse(targetURL)
 		if err != nil {
@@ -66,12 +90,10 @@ func main() {
 		log.Printf("🔀 Routed [%s] request to: %s", matchedPrefix, target.Host)
 	}
 
-	// 4. Create the proxy using our custom load-balancing director
 	proxy := &httputil.ReverseProxy{Director: director}
 
-	log.Println("🚀 API Gateway running on http://localhost:8080 (Dynamic Routing Active)")
+	log.Println("🚀 API Gateway running on http://localhost:8080 (Circuit Breakers Active)")
 
-	// 5. Start the server with Logging -> Rate Limiter -> Load Balancer -> Backend
 	err := http.ListenAndServe(":8080", loggingMiddleware(rateLimitMiddleware(proxy.ServeHTTP)))
 	if err != nil {
 		log.Fatal("Server error:", err)

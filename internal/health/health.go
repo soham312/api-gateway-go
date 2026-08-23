@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	
+	"github.com/soham312/api-gateway-go/internal/config"
 )
 
 type State int
@@ -24,7 +26,7 @@ type Backend struct {
 	mu          sync.RWMutex
 	state       State
 	failures    int
-	maxFailures int
+	successes   int
 }
 
 func NewBackend(url string, weight int) *Backend {
@@ -35,7 +37,6 @@ func NewBackend(url string, weight int) *Backend {
 		URL:         url,
 		Weight:      weight,
 		state:       StateClosed,
-		maxFailures: 3,
 	}
 }
 
@@ -68,9 +69,18 @@ func (b *Backend) RecordSuccess() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.failures = 0
-	if b.state == StateHalfOpen || b.state == StateOpen {
+	b.successes++
+	
+	cfg := config.Get()
+	successThreshold := 1 // By default, 1 success recovers
+	if cfg != nil && cfg.CBSuccessThreshold > 0 {
+		successThreshold = cfg.CBSuccessThreshold
+	}
+	
+	if (b.state == StateHalfOpen || b.state == StateOpen) && b.successes >= successThreshold {
 		log.Printf("🟢 CIRCUIT CLOSED: %s is healthy.", b.URL)
 		b.state = StateClosed
+		b.successes = 0
 	}
 }
 
@@ -78,7 +88,14 @@ func (b *Backend) RecordFailure() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.failures++
-	if b.state == StateClosed && b.failures >= b.maxFailures {
+	
+	cfg := config.Get()
+	maxFailures := 3
+	if cfg != nil && cfg.CBFailureThreshold > 0 {
+		maxFailures = cfg.CBFailureThreshold
+	}
+
+	if b.state == StateClosed && b.failures >= maxFailures {
 		log.Printf("🔴 CIRCUIT TRIPPED: %s is down.", b.URL)
 		b.state = StateOpen
 	} else if b.state == StateHalfOpen {
@@ -89,30 +106,51 @@ func (b *Backend) RecordFailure() {
 
 // Poller manages active health checks
 type Poller struct {
-	backends []*Backend
+	backends atomic.Value
 }
 
 func NewPoller(backends []*Backend) *Poller {
-	return &Poller{backends: backends}
+	p := &Poller{}
+	p.UpdateBackends(backends)
+	return p
+}
+
+func (p *Poller) UpdateBackends(backends []*Backend) {
+	p.backends.Store(backends)
 }
 
 func (p *Poller) Start() {
 	go func() {
-		client := http.Client{Timeout: 2 * time.Second}
 		for {
-			for _, b := range p.backends {
-				state := b.GetState()
-				
-				if state == StateOpen {
-					b.SetState(StateHalfOpen)
-					log.Printf("🟡 CIRCUIT HALF-OPEN: %s testing recovery.", b.URL)
+			cfg := config.Get()
+			healthPath := ""
+			cbTimeout := 2 * time.Second
+			if cfg != nil {
+				if cfg.HealthCheckPath != "" {
+					healthPath = cfg.HealthCheckPath
 				}
-				
-				resp, err := client.Get(b.URL)
-				if err != nil || resp.StatusCode >= 500 {
-					b.RecordFailure()
-				} else {
-					b.RecordSuccess()
+				if cfg.CBTimeout != "" {
+					if t, err := time.ParseDuration(cfg.CBTimeout); err == nil {
+						cbTimeout = t
+					}
+				}
+			}
+			client := http.Client{Timeout: cbTimeout}
+			if backends, ok := p.backends.Load().([]*Backend); ok {
+				for _, b := range backends {
+					state := b.GetState()
+					
+					if state == StateOpen {
+						b.SetState(StateHalfOpen)
+						log.Printf("🟡 CIRCUIT HALF-OPEN: %s testing recovery.", b.URL)
+					}
+					
+					resp, err := client.Get(b.URL + healthPath)
+					if err != nil || resp.StatusCode >= 500 {
+						b.RecordFailure()
+					} else {
+						b.RecordSuccess()
+					}
 				}
 			}
 			time.Sleep(10 * time.Second)

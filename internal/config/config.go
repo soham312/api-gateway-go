@@ -2,13 +2,35 @@ package config
 
 import (
 	"encoding/json"
+	"log"
 	"os"
+	"sync/atomic"
+
+	"github.com/fsnotify/fsnotify"
 )
 
+var activeConfig atomic.Value
+
+func Get() *Config {
+	v := activeConfig.Load()
+	if v != nil {
+		return v.(*Config)
+	}
+	return nil
+}
+
+
 type Config struct {
-	Server     ServerConfig     `json:"server"`
-	Middleware MiddlewareConfig `json:"middleware"`
-	Routes     []RouteConfig    `json:"routes"`
+	Server             ServerConfig     `json:"server"`
+	Middleware         MiddlewareConfig `json:"middleware"`
+	Routes             []RouteConfig    `json:"routes"`
+	HealthCheckPath    string           `json:"health_check_path"`
+	RetryMaxAttempts   int              `json:"retry_max_attempts"`
+	RetryBaseDelay     string           `json:"retry_base_delay"`
+	RetryMaxDelay      string           `json:"retry_max_delay"`
+	CBFailureThreshold int              `json:"cb_failure_threshold"`
+	CBSuccessThreshold int              `json:"cb_success_threshold"`
+	CBTimeout          string           `json:"cb_timeout"`
 }
 
 type ServerConfig struct {
@@ -27,6 +49,8 @@ type TLSConfig struct {
 type MiddlewareConfig struct {
 	CORS struct {
 		AllowedOrigins []string `json:"allowed_origins"`
+		AllowedMethods []string `json:"allowed_methods"`
+		AllowedHeaders []string `json:"allowed_headers"`
 	} `json:"cors"`
 	JWT struct {
 		Secret string `json:"secret"`
@@ -52,12 +76,21 @@ type BackendConfig struct {
 }
 
 func Load(path string) (*Config, error) {
+	cfg, err := parseConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	
+	activeConfig.Store(cfg)
+	return cfg, nil
+}
+
+func parseConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Environment variable interpolation
 	strData := os.ExpandEnv(string(data))
 	
 	var cfg Config
@@ -66,4 +99,43 @@ func Load(path string) (*Config, error) {
 	}
 	
 	return &cfg, nil
+}
+
+func Watch(path string, onChange func(*Config)) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		defer watcher.Close()
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+					log.Printf("Config file changed: %s", event.Name)
+					newCfg, err := parseConfig(path)
+					if err != nil {
+						log.Printf("Error loading new config: %v", err)
+					} else {
+						activeConfig.Store(newCfg)
+						if onChange != nil {
+							onChange(newCfg)
+						}
+						log.Println("Successfully reloaded configuration in memory")
+					}
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Printf("Watcher error: %v", err)
+			}
+		}
+	}()
+
+	return watcher.Add(path)
 }

@@ -31,38 +31,55 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	var allBackends []*health.Backend
-	var routes []router.Route
+	buildRoutesAndPoller := func(c *config.Config) ([]router.Route, []*health.Backend) {
+		var allBackends []*health.Backend
+		var routes []router.Route
 
-	for _, routeCfg := range cfg.Routes {
-		var routeBackends []*health.Backend
-		for _, b := range routeCfg.Backends {
-			backend := health.NewBackend(b.URL, b.Weight)
-			routeBackends = append(routeBackends, backend)
-			allBackends = append(allBackends, backend)
+		for _, routeCfg := range c.Routes {
+			var routeBackends []*health.Backend
+			for _, b := range routeCfg.Backends {
+				backend := health.NewBackend(b.URL, b.Weight)
+				routeBackends = append(routeBackends, backend)
+				allBackends = append(allBackends, backend)
+			}
+
+			var b balancer.Balancer
+			if routeCfg.Balancer == "least_conn" {
+				b = balancer.NewLeastConnections(routeBackends)
+			} else {
+				b = balancer.NewWeightedRoundRobin(routeBackends)
+			}
+
+			routes = append(routes, router.Route{
+				Prefix:      routeCfg.PathPrefix,
+				StripPrefix: routeCfg.StripPrefix,
+				Balancer:    b,
+			})
 		}
-
-		var b balancer.Balancer
-		if routeCfg.Balancer == "least_conn" {
-			b = balancer.NewLeastConnections(routeBackends)
-		} else {
-			b = balancer.NewWeightedRoundRobin(routeBackends)
-		}
-
-		routes = append(routes, router.Route{
-			Prefix:      routeCfg.PathPrefix,
-			StripPrefix: routeCfg.StripPrefix,
-			Balancer:    b,
-		})
+		return routes, allBackends
 	}
+
+	routes, allBackends := buildRoutesAndPoller(cfg)
+
+	// Setup Router and Proxy
+	r := router.NewRouter(routes)
+	p := proxy.New(r)
 
 	// Start health poller
 	poller := health.NewPoller(allBackends)
 	poller.Start()
 
-	// Setup Router and Proxy
-	r := router.NewRouter(routes)
-	p := proxy.New(r)
+	// Watch config for hot-reloading
+	go func() {
+		err := config.Watch("config.json", func(newCfg *config.Config) {
+			newRoutes, newBackends := buildRoutesAndPoller(newCfg)
+			r.UpdateRoutes(newRoutes)
+			poller.UpdateBackends(newBackends)
+		})
+		if err != nil {
+			log.Printf("Failed to watch config.json: %v", err)
+		}
+	}()
 
 	// Setup Middlewares
 	var handler http.Handler = p

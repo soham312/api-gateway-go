@@ -1,6 +1,7 @@
 package router
 
 import (
+	"sync/atomic"
 	"strings"
 	"github.com/soham312/api-gateway-go/internal/balancer"
 )
@@ -12,10 +13,16 @@ type Route struct {
 }
 
 type Router struct {
-	routes []Route
+	routes atomic.Value
 }
 
 func NewRouter(routes []Route) *Router {
+	r := &Router{}
+	r.UpdateRoutes(routes)
+	return r
+}
+
+func (r *Router) UpdateRoutes(routes []Route) {
 	// Sort routes by prefix length descending for Longest-Prefix Match
 	for i := 0; i < len(routes); i++ {
 		for j := i + 1; j < len(routes); j++ {
@@ -24,12 +31,16 @@ func NewRouter(routes []Route) *Router {
 			}
 		}
 	}
-	return &Router{routes: routes}
+	r.routes.Store(routes)
 }
 
 func (r *Router) Match(path string) (*Route, string) {
-	for i := range r.routes {
-		route := &r.routes[i]
+	routes, ok := r.routes.Load().([]Route)
+	if !ok {
+		return nil, path
+	}
+	for i := range routes {
+		route := &routes[i]
 		if strings.HasPrefix(path, route.Prefix) {
 			matchPath := path
 			if route.StripPrefix {

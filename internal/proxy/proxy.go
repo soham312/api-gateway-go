@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/soham312/api-gateway-go/internal/config"
 	"github.com/soham312/api-gateway-go/internal/health"
 	"github.com/soham312/api-gateway-go/internal/router"
 )
@@ -37,7 +38,27 @@ func (t *GatewayTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.Body.Close()
 	}
 
-	for i := 0; i <= t.MaxRetries; i++ {
+	cfg := config.Get()
+	maxRetries := t.MaxRetries
+	backoff := t.Backoff
+	maxDelay := t.Backoff // for simplicity if maxDelay not set
+	if cfg != nil {
+		if cfg.RetryMaxAttempts > 0 {
+			maxRetries = cfg.RetryMaxAttempts
+		}
+		if cfg.RetryBaseDelay != "" {
+			if d, err := time.ParseDuration(cfg.RetryBaseDelay); err == nil {
+				backoff = d
+			}
+		}
+		if cfg.RetryMaxDelay != "" {
+			if d, err := time.ParseDuration(cfg.RetryMaxDelay); err == nil {
+				maxDelay = d
+			}
+		}
+	}
+
+	for i := 0; i <= maxRetries; i++ {
 		if req.Body != nil || bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		}
@@ -55,9 +76,15 @@ func (t *GatewayTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			backend.RecordFailure()
 		}
 		
-		if i < t.MaxRetries {
-			log.Printf("⚠️ Request failed, retrying %d/%d after %v", i+1, t.MaxRetries, t.Backoff)
-			time.Sleep(t.Backoff)
+		if i < maxRetries {
+			log.Printf("⚠️ Request failed, retrying %d/%d after %v", i+1, maxRetries, backoff)
+			time.Sleep(backoff)
+			
+			// Simple exponential backoff
+			backoff *= 2
+			if backoff > maxDelay {
+				backoff = maxDelay
+			}
 		}
 	}
 	return resp, err

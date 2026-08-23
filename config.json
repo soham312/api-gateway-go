@@ -1,9 +1,45 @@
 {
-  "/users": [
-    "https://jsonplaceholder.typicode.com",
-    "https://dummyjson.com"
-  ],
-  "/products": [
-    "https://api.restful-api.dev"
+  "server": {
+    "port": 8080,
+    "read_timeout": "15s",
+    "write_timeout": "15s",
+    "tls": {
+      "enabled": false,
+      "cert_file": "",
+      "key_file": ""
+    }
+  },
+  "middleware": {
+    "cors": {
+      "allowed_origins": ["*"]
+    },
+    "jwt": {
+      "secret": ""
+    },
+    "rate_limit": {
+      "requests_per_second": 2,
+      "burst": 5,
+      "cleanup_interval": "1m",
+      "ttl": "5m"
+    }
+  },
+  "routes": [
+    {
+      "path_prefix": "/users",
+      "strip_prefix": true,
+      "balancer": "round_robin",
+      "backends": [
+        { "url": "https://jsonplaceholder.typicode.com", "weight": 1 },
+        { "url": "https://dummyjson.com", "weight": 2 }
+      ]
+    },
+    {
+      "path_prefix": "/products",
+      "strip_prefix": false,
+      "balancer": "least_conn",
+      "backends": [
+        { "url": "https://api.restful-api.dev", "weight": 1 }
+      ]
+    }
   ]
 }

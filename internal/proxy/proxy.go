@@ -25,9 +25,10 @@ type GatewayTransport struct {
 func (t *GatewayTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	var err error
-	
+
 	backend, ok := req.Context().Value(backendKey{}).(*health.Backend)
-	if ok && backend != nil {
+	routed := ok && backend != nil
+	if routed {
 		backend.RecordConnection()
 		defer backend.ReleaseConnection()
 	}
@@ -57,29 +58,35 @@ func (t *GatewayTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			}
 		}
 	}
+	if !routed {
+		// No route matched or every backend was down before we ever made a
+		// request: retrying will not change that, so fail fast instead of
+		// paying the full backoff schedule.
+		maxRetries = 0
+	}
 
 	for i := 0; i <= maxRetries; i++ {
 		if req.Body != nil || bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		}
-		
+
 		resp, err = http.DefaultTransport.RoundTrip(req)
-		
+
 		if err == nil && resp.StatusCode < 500 {
-			if ok && backend != nil {
+			if routed {
 				backend.RecordSuccess()
 			}
 			return resp, err
 		}
-		
-		if ok && backend != nil {
+
+		if routed {
 			backend.RecordFailure()
 		}
-		
+
 		if i < maxRetries {
 			log.Printf("⚠️ Request failed, retrying %d/%d after %v", i+1, maxRetries, backoff)
 			time.Sleep(backoff)
-			
+
 			// Simple exponential backoff
 			backoff *= 2
 			if backoff > maxDelay {
@@ -112,7 +119,7 @@ func New(r *router.Router) *httputil.ReverseProxy {
 		req.URL.Path = newPath
 		req.Host = target.Host
 	}
-	
+
 	return &httputil.ReverseProxy{
 		Director:  director,
 		Transport: &GatewayTransport{MaxRetries: 2, Backoff: 500 * time.Millisecond},

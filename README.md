@@ -122,18 +122,37 @@ The gateway is entirely configured via a `config.json` file. Changes to this fil
 }
 ```
 
-## Benchmark Results
+## Load Testing
 
-The gateway was benchmarked using [k6](https://k6.io/) simulating 100 concurrent virtual users over 10 seconds against an unthrottled local backend configuration to measure absolute maximum throughput.
+A [k6](https://k6.io/) script (`test.js`) load-tests the gateway:
+```bash
+k6 run test.js                                     # targets http://localhost:8080 by default
+k6 run -e BASE_URL=http://host:PORT test.js         # override the target
+```
+
+### Results
+
+Measured 2026-08-28 on an Apple M3 (8 cores), macOS 26.0.1, go1.27.0 darwin/arm64.
+Setup: the gateway fronting two local Go backends that immediately return `200 OK` (**not** the internet-dependent routes in the committed `config.json` — hitting a real upstream would benchmark that upstream's network latency, not the gateway). 100 concurrent virtual users for 10 seconds against a round-robin route.
 
 | Metric | Result |
-|--------|--------|
-| **Throughput (RPS)** | `4,103 req/sec` |
-| **Average Latency** | `24.3 ms` |
-| **Success Rate (HTTP 200)** | `100%` |
-| **Total Requests** | `41,103` |
+|---|---|
+| Total requests | 341,925 |
+| Throughput | ~34,185 req/s |
+| Success rate | 100% (0 failed) |
+| Avg latency | 2.88 ms |
+| p95 latency | 6.72 ms |
 
-*Note: In a separate saturation test with 500 concurrent virtual users, the gateway gracefully queued traffic while maintaining a 100% success rate (zero dropped connections), heavily proving its resilience under pressure.*
+This is one run, on one machine, against backends that do nothing but return `200 OK` — no TLS, no real work on the backend side. It shows the gateway's own overhead, not a production capacity guarantee. To reproduce: point two routes in a `config.json` at local backends that return `200 OK` immediately, `go build -o gateway ./cmd/gateway && ./gateway`, then run `k6 run -e BASE_URL=http://localhost:PORT test.js`.
+
+**Note:** an earlier attempt at this benchmark used `python3 -m http.server` as the backend and saw a 13% failure rate. That turned out to be the backend, not the gateway — but chasing it down surfaced a real bug: `internal/proxy` was proxying through `http.DefaultTransport`, whose default cap of 2 idle connections per host starves a reverse proxy that fans many concurrent client requests into a handful of backend hosts. Fixed by giving `GatewayTransport` its own `http.Transport` with `MaxIdleConnsPerHost: 100` (`internal/proxy/proxy.go`).
+
+## Metrics
+
+The gateway exposes a `/metrics` endpoint in Prometheus text exposition format: total requests, requests broken down by response status code, and per-backend circuit breaker state (`0` = closed/healthy, `1` = open/down, `2` = half-open/testing). It's a small hand-rolled counter set (`internal/metrics`), not a full Prometheus client integration — no histograms, no scrape-config tooling — but it's enough to watch request volume and backend health during a demo or under load:
+```bash
+curl http://localhost:8080/metrics
+```
 
 ## Extending the Gateway
 

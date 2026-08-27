@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -21,23 +23,26 @@ func (j *JWTAuth) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "Unauthorized: Missing token", http.StatusUnauthorized)
 			return
 		}
-		
+
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
 			http.Error(w, "Unauthorized: Invalid token format", http.StatusUnauthorized)
 			return
 		}
-		
+
 		tokenString := parts[1]
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
 			return j.Secret, nil
-		})
-		
+		}, jwt.WithValidMethods([]string{"HS256", "HS384", "HS512"}))
+
 		if err != nil || !token.Valid {
-		    http.Error(w, "Unauthorized: Invalid token", http.StatusUnauthorized)
+			http.Error(w, "Unauthorized: Invalid token", http.StatusUnauthorized)
 			return
 		}
-		
+
 		next.ServeHTTP(w, r)
 	})
 }

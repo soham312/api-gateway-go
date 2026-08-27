@@ -138,29 +138,64 @@ visibility (JSON zero-value would default to `false` even without it).
 
 ## Known gaps / things NOT done
 
-- **README overclaims.** It advertises "benchmarks" and a "Logger &
-  Metrics" component in its architecture diagram; neither is backed by
-  anything in the repo — there's no metrics endpoint, and no benchmark
-  data has ever been captured or committed. Not touched this session
-  (documentation rewrite wasn't in scope) — flagging so it doesn't get
-  mistaken for finished work.
-- **`test.js` (k6 load test) has never been run.** `k6` isn't installed
-  in this environment. The script itself looks fine but is unverified.
 - **`cmd/gateway/main.go` has 0% test coverage.** It's wiring/composition,
   not logic — reasonable to leave untested, but worth knowing if someone
   asks "what's untested and why."
-- **No CI pipeline.** No GitHub Actions or equivalent runs build/vet/test
-  on push.
-- **No Prometheus/metrics endpoint**, despite the README implying one exists.
 - **No containerized multi-service demo.** A `Dockerfile` exists (per git
   log) but there's no `docker-compose.yml` wiring the gateway to real
   backend containers for a one-command demo.
 
-These were discussed as a possible "push this to excellent" follow-up
-(CI, real benchmark numbers, Docker Compose demo, a security case-study
-write-up of the JWT bug) but the user had not yet chosen which of those
-to pursue when this handoff was written — treat that as an open decision,
-not a to-do list to execute unprompted.
+Resolved in a follow-up session (2026-08-28): README's fabricated
+benchmark table was removed; a minimal `/metrics` endpoint
+(`internal/metrics`, Prometheus text format — total requests, requests
+by status code, per-backend circuit state) was added and wired into
+`main.go` via a small `http.ServeMux` so it bypasses the auth/rate-limit
+chain; a GitHub Actions CI workflow (`.github/workflows/ci.yml`) now
+runs gofmt/vet/build/test on every push and PR to `main`.
+
+### k6 benchmark: actually run this time
+
+`k6` was installed via `go install go.k6.io/k6@latest` (no Homebrew in
+this environment) and `test.js` was actually run. Two things fell out of
+that:
+
+1. **`test.js` had a real bug**: it hardcoded `http://host.docker.internal:8080`,
+   which only resolves when k6 runs inside Docker — but there's no
+   `docker-compose.yml` in this repo, so anyone following the README's
+   own `k6 run test.js` instruction would get a DNS failure. Fixed to
+   default to `http://localhost:8080`, overridable via `-e BASE_URL=...`.
+2. **First real run (against `python3 -m http.server` as the backend)
+   showed a 13% failure rate.** Root-caused to two compounding factors:
+   the Python dev server's own concurrency limits under 100 VUs, *and* a
+   genuine gateway bug — `internal/proxy.GatewayTransport` was calling
+   `http.DefaultTransport.RoundTrip`, whose default `MaxIdleConnsPerHost`
+   is 2. That starves a reverse proxy fanning many concurrent client
+   requests into a few backend hosts, forcing a fresh TCP handshake per
+   request under load. Fixed by giving `GatewayTransport` its own
+   `http.Transport` (`MaxIdleConnsPerHost: 100`, `MaxIdleConns: 200`,
+   `IdleConnTimeout: 90s`) in `proxy.New()`.
+   Re-testing against the *same* Python backend after the fix only
+   dropped the failure rate to 9% — confirming the Python dev server
+   itself was still the dominant bottleneck, not (only) the gateway.
+   Swapped in a two-line Go stub backend (plain `net/http`, immediate
+   `200 OK`) instead, and got a clean **341,925 requests, 0 failures,
+   ~34,185 req/s, 2.88ms avg / 6.72ms p95 latency** (Apple M3, macOS
+   26.0.1, go1.27.0, 100 VUs, 10s). That real, reproducible number is now
+   in the README's Load Testing section, along with the methodology and
+   a note about the Python-backend detour so nobody mistakes the earlier
+   13%/9% numbers for a gateway defect if they go looking.
+
+None of the benchmark scaffolding (stub backend, temp configs) is part
+of the repo — it lived in `/tmp/gw_bench` for this session only and was
+torn down after. The only repo changes from this: `test.js`'s `BASE_URL`
+fix and the `internal/proxy/proxy.go` transport-pooling fix (with
+existing tests still passing at 86.1% coverage for that package, up from
+85.5% — no new test was written specifically for the pooling change
+itself; it's exercised indirectly by the existing proxy tests).
+
+Remaining open items: Docker Compose demo, a security case-study write-up
+of the JWT bug. Still an open decision, not a to-do list to execute
+unprompted.
 
 ## How to verify this state yourself
 

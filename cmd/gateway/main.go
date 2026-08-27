@@ -13,6 +13,7 @@ import (
 	"github.com/soham312/api-gateway-go/internal/balancer"
 	"github.com/soham312/api-gateway-go/internal/config"
 	"github.com/soham312/api-gateway-go/internal/health"
+	"github.com/soham312/api-gateway-go/internal/metrics"
 	"github.com/soham312/api-gateway-go/internal/middleware"
 	"github.com/soham312/api-gateway-go/internal/proxy"
 	"github.com/soham312/api-gateway-go/internal/router"
@@ -109,12 +110,25 @@ func main() {
 
 	handler = middleware.LoggingMiddleware(handler)
 
+	m := metrics.New()
+	handler = m.Middleware(handler)
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", m.Handler(func() map[string]int {
+		states := make(map[string]int)
+		for _, b := range poller.Backends() {
+			states[b.URL] = int(b.GetState())
+		}
+		return states
+	}))
+	mux.Handle("/", handler)
+
 	readTimeout := parseDuration(cfg.Server.ReadTimeout, 10*time.Second)
 	writeTimeout := parseDuration(cfg.Server.WriteTimeout, 10*time.Second)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      handler,
+		Handler:      mux,
 		ReadTimeout:  readTimeout,
 		WriteTimeout: writeTimeout,
 	}

@@ -119,6 +119,15 @@ func (p *Poller) UpdateBackends(backends []*Backend) {
 	p.backends.Store(backends)
 }
 
+// Backends returns the poller's current backend list, reflecting the most
+// recent config reload.
+func (p *Poller) Backends() []*Backend {
+	if backends, ok := p.backends.Load().([]*Backend); ok {
+		return backends
+	}
+	return nil
+}
+
 func (p *Poller) Start() {
 	go func() {
 		for {

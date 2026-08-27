@@ -20,6 +20,7 @@ type backendKey struct{}
 type GatewayTransport struct {
 	MaxRetries int
 	Backoff    time.Duration
+	Transport  http.RoundTripper
 }
 
 func (t *GatewayTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -70,7 +71,7 @@ func (t *GatewayTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		}
 
-		resp, err = http.DefaultTransport.RoundTrip(req)
+		resp, err = t.Transport.RoundTrip(req)
 
 		if err == nil && resp.StatusCode < 500 {
 			if routed {
@@ -120,8 +121,21 @@ func New(r *router.Router) *httputil.ReverseProxy {
 		req.Host = target.Host
 	}
 
+	// Go's http.DefaultTransport caps idle connections at 2 per host, which
+	// is fine for a single client talking to many hosts but wrong for a
+	// gateway: many concurrent client requests fan in through this one
+	// process to a handful of backend hosts. Without a larger per-host pool,
+	// load beyond 2 concurrent requests to the same backend forces a fresh
+	// TCP (and TLS, for https backends) handshake per request instead of
+	// reusing a connection.
+	backendTransport := &http.Transport{
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
 	return &httputil.ReverseProxy{
 		Director:  director,
-		Transport: &GatewayTransport{MaxRetries: 2, Backoff: 500 * time.Millisecond},
+		Transport: &GatewayTransport{MaxRetries: 2, Backoff: 500 * time.Millisecond, Transport: backendTransport},
 	}
 }

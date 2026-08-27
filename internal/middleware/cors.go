@@ -3,7 +3,7 @@ package middleware
 import (
 	"net/http"
 	"strings"
-	
+
 	"github.com/soham312/api-gateway-go/internal/config"
 )
 
@@ -21,7 +21,7 @@ func (c *CORS) Middleware(next http.Handler) http.Handler {
 		allowedOrigins := c.AllowedOrigins
 		allowedMethods := "GET, POST, PUT, DELETE, OPTIONS"
 		allowedHeaders := "Content-Type, Authorization"
-		
+
 		if cfg != nil {
 			if len(cfg.Middleware.CORS.AllowedOrigins) > 0 {
 				allowedOrigins = cfg.Middleware.CORS.AllowedOrigins
@@ -36,14 +36,14 @@ func (c *CORS) Middleware(next http.Handler) http.Handler {
 
 		origin := r.Header.Get("Origin")
 		allowed := false
-		
+
 		for _, o := range allowedOrigins {
 			if o == "*" || o == origin {
 				allowed = true
 				break
 			}
 		}
-		
+
 		if allowed {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", allowedMethods)

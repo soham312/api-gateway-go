@@ -1,8 +1,8 @@
 package balancer
 
 import (
-	"sync/atomic"
 	"github.com/soham312/api-gateway-go/internal/health"
+	"sync/atomic"
 )
 
 type LeastConnections struct {

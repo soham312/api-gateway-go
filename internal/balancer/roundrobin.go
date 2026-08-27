@@ -1,8 +1,8 @@
 package balancer
 
 import (
-	"sync/atomic"
 	"github.com/soham312/api-gateway-go/internal/health"
+	"sync/atomic"
 )
 
 type WeightedRoundRobin struct {
@@ -26,7 +26,7 @@ func (wrr *WeightedRoundRobin) Next() *health.Backend {
 	if len(wrr.backends) == 0 {
 		return nil
 	}
-	
+
 	for i := 0; i < len(wrr.backends); i++ {
 		idx := atomic.AddUint64(&wrr.current, 1) % uint64(len(wrr.backends))
 		b := wrr.backends[idx]

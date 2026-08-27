@@ -1,9 +1,9 @@
 package router
 
 import (
-	"sync/atomic"
-	"strings"
 	"github.com/soham312/api-gateway-go/internal/balancer"
+	"strings"
+	"sync/atomic"
 )
 
 type Route struct {

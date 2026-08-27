@@ -6,27 +6,27 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	
+
 	"github.com/soham312/api-gateway-go/internal/config"
 )
 
 type State int
 
 const (
-	StateClosed State = iota // Healthy
-	StateOpen                // Unhealthy
-	StateHalfOpen            // Testing recovery
+	StateClosed   State = iota // Healthy
+	StateOpen                  // Unhealthy
+	StateHalfOpen              // Testing recovery
 )
 
 type Backend struct {
 	URL               string
 	Weight            int
 	ActiveConnections int64
-	
-	mu          sync.RWMutex
-	state       State
-	failures    int
-	successes   int
+
+	mu        sync.RWMutex
+	state     State
+	failures  int
+	successes int
 }
 
 func NewBackend(url string, weight int) *Backend {
@@ -34,9 +34,9 @@ func NewBackend(url string, weight int) *Backend {
 		weight = 1
 	}
 	return &Backend{
-		URL:         url,
-		Weight:      weight,
-		state:       StateClosed,
+		URL:    url,
+		Weight: weight,
+		state:  StateClosed,
 	}
 }
 
@@ -70,13 +70,13 @@ func (b *Backend) RecordSuccess() {
 	defer b.mu.Unlock()
 	b.failures = 0
 	b.successes++
-	
+
 	cfg := config.Get()
 	successThreshold := 1 // By default, 1 success recovers
 	if cfg != nil && cfg.CBSuccessThreshold > 0 {
 		successThreshold = cfg.CBSuccessThreshold
 	}
-	
+
 	if (b.state == StateHalfOpen || b.state == StateOpen) && b.successes >= successThreshold {
 		log.Printf("🟢 CIRCUIT CLOSED: %s is healthy.", b.URL)
 		b.state = StateClosed
@@ -88,7 +88,7 @@ func (b *Backend) RecordFailure() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.failures++
-	
+
 	cfg := config.Get()
 	maxFailures := 3
 	if cfg != nil && cfg.CBFailureThreshold > 0 {
@@ -139,12 +139,12 @@ func (p *Poller) Start() {
 			if backends, ok := p.backends.Load().([]*Backend); ok {
 				for _, b := range backends {
 					state := b.GetState()
-					
+
 					if state == StateOpen {
 						b.SetState(StateHalfOpen)
 						log.Printf("🟡 CIRCUIT HALF-OPEN: %s testing recovery.", b.URL)
 					}
-					
+
 					resp, err := client.Get(b.URL + healthPath)
 					if err != nil || resp.StatusCode >= 500 {
 						b.RecordFailure()

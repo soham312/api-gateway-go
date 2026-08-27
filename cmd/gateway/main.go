@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
-	"fmt"
 
 	"github.com/soham312/api-gateway-go/internal/balancer"
 	"github.com/soham312/api-gateway-go/internal/config"
@@ -83,18 +87,21 @@ func main() {
 
 	// Setup Middlewares
 	var handler http.Handler = p
-	
+
 	rl := middleware.NewRateLimiter(
 		cfg.Middleware.RateLimit.RequestsPerSecond,
 		cfg.Middleware.RateLimit.Burst,
 		parseDuration(cfg.Middleware.RateLimit.TTL, 5*time.Minute),
 		parseDuration(cfg.Middleware.RateLimit.CleanupInterval, 1*time.Minute),
+		cfg.Middleware.RateLimit.TrustProxyHeaders,
 	)
 	handler = rl.Middleware(handler)
 
 	if cfg.Middleware.JWT.Secret != "" {
 		jwtAuth := middleware.NewJWTAuth(cfg.Middleware.JWT.Secret)
 		handler = jwtAuth.Middleware(handler)
+	} else {
+		log.Println("⚠️  JWT authentication is DISABLED: no middleware.jwt.secret configured. All routes are unauthenticated.")
 	}
 
 	cors := middleware.NewCORS(cfg.Middleware.CORS.AllowedOrigins)
@@ -112,15 +119,29 @@ func main() {
 		WriteTimeout: writeTimeout,
 	}
 
-	if cfg.Server.TLS.Enabled {
-		log.Printf("🚀 API Gateway running on https://localhost:%d", cfg.Server.Port)
-		err = srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
-	} else {
-		log.Printf("🚀 API Gateway running on http://localhost:%d", cfg.Server.Port)
-		err = srv.ListenAndServe()
-	}
+	go func() {
+		var serveErr error
+		if cfg.Server.TLS.Enabled {
+			log.Printf("🚀 API Gateway running on https://localhost:%d", cfg.Server.Port)
+			serveErr = srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
+		} else {
+			log.Printf("🚀 API Gateway running on http://localhost:%d", cfg.Server.Port)
+			serveErr = srv.ListenAndServe()
+		}
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", serveErr)
+		}
+	}()
 
-	if err != nil {
-		log.Fatal(err)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("🛑 Shutdown signal received, draining in-flight requests...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Graceful shutdown failed: %v", err)
 	}
+	log.Println("✅ Gateway shut down cleanly")
 }

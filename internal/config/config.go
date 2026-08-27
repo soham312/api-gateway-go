@@ -19,7 +19,6 @@ func Get() *Config {
 	return nil
 }
 
-
 type Config struct {
 	Server             ServerConfig     `json:"server"`
 	Middleware         MiddlewareConfig `json:"middleware"`
@@ -60,6 +59,11 @@ type MiddlewareConfig struct {
 		Burst             int     `json:"burst"`
 		CleanupInterval   string  `json:"cleanup_interval"`
 		TTL               string  `json:"ttl"`
+		// TrustProxyHeaders enables reading the client IP from
+		// X-Forwarded-For/X-Real-IP. Only enable this when the gateway is
+		// deployed behind a proxy/load balancer that sets these headers
+		// itself, otherwise a client can spoof them to bypass rate limiting.
+		TrustProxyHeaders bool `json:"trust_proxy_headers"`
 	} `json:"rate_limit"`
 }
 
@@ -80,7 +84,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	activeConfig.Store(cfg)
 	return cfg, nil
 }
@@ -90,14 +94,14 @@ func parseConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	strData := os.ExpandEnv(string(data))
-	
+
 	var cfg Config
 	if err := json.Unmarshal([]byte(strData), &cfg); err != nil {
 		return nil, err
 	}
-	
+
 	return &cfg, nil
 }
 

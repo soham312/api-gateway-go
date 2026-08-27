@@ -20,7 +20,8 @@
       "requests_per_second": 2,
       "burst": 5,
       "cleanup_interval": "1m",
-      "ttl": "5m"
+      "ttl": "5m",
+      "trust_proxy_headers": false
     }
   },
   "routes": [],

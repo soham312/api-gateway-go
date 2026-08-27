@@ -16,19 +16,26 @@ type visitor struct {
 }
 
 type RateLimiter struct {
-	visitors map[string]*visitor
-	mu       sync.Mutex
-	rps      float64
-	burst    int
-	ttl      time.Duration
+	visitors   map[string]*visitor
+	mu         sync.Mutex
+	rps        float64
+	burst      int
+	ttl        time.Duration
+	trustProxy bool
 }
 
-func NewRateLimiter(rps float64, burst int, ttl time.Duration, cleanupInterval time.Duration) *RateLimiter {
+// NewRateLimiter creates a limiter keyed by client IP. trustProxy controls
+// whether X-Forwarded-For/X-Real-IP headers are honored: only set this to
+// true when the gateway sits behind a proxy/load balancer that overwrites
+// those headers, since otherwise any client can spoof them to get a fresh
+// rate-limit bucket per request.
+func NewRateLimiter(rps float64, burst int, ttl time.Duration, cleanupInterval time.Duration, trustProxy bool) *RateLimiter {
 	rl := &RateLimiter{
-		visitors: make(map[string]*visitor),
-		rps:      rps,
-		burst:    burst,
-		ttl:      ttl,
+		visitors:   make(map[string]*visitor),
+		rps:        rps,
+		burst:      burst,
+		ttl:        ttl,
+		trustProxy: trustProxy,
 	}
 
 	go rl.cleanupLoop(cleanupInterval)
@@ -48,13 +55,15 @@ func (rl *RateLimiter) cleanupLoop(interval time.Duration) {
 	}
 }
 
-func getIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		ips := strings.Split(xff, ",")
-		return strings.TrimSpace(ips[0])
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+func getIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			ips := strings.Split(xff, ",")
+			return strings.TrimSpace(ips[0])
+		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return strings.TrimSpace(xri)
+		}
 	}
 	ip := r.RemoteAddr
 	if colonIdx := strings.LastIndex(ip, ":"); colonIdx != -1 {
@@ -65,8 +74,8 @@ func getIP(r *http.Request) string {
 
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := getIP(r)
-		
+		ip := getIP(r, rl.trustProxy)
+
 		rl.mu.Lock()
 		v, exists := rl.visitors[ip]
 		if !exists {
